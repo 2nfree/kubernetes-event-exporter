@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"text/template"
 
-	"github.com/resmoio/kubernetes-event-exporter/pkg/kube"
 	"github.com/Masterminds/sprig/v3"
+	"github.com/resmoio/kubernetes-event-exporter/pkg/kube"
 )
 
 func GetString(event *kube.EnhancedEvent, text string) (string, error) {
-	tmpl, err := template.New("template").Funcs(sprig.TxtFuncMap()).Parse(text)
+	funcMap := sprig.TxtFuncMap()
+	tmpl, err := template.New("template").Funcs(funcMap).Parse(text)
 	if err != nil {
 		return "", err
 	}

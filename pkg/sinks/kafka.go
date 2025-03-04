@@ -21,6 +21,7 @@ import (
 type KafkaConfig struct {
 	Topic            string                 `yaml:"topic"`
 	Brokers          []string               `yaml:"brokers"`
+	CustomFields     map[string]interface{} `yaml:"customFields"`
 	Layout           map[string]interface{} `yaml:"layout"`
 	ClientId         string                 `yaml:"clientId"`
 	CompressionCodec string                 `yaml:"compressionCodec" default:"none"`
@@ -86,34 +87,108 @@ func NewKafkaSink(cfg *KafkaConfig) (Sink, error) {
 	}, nil
 }
 
-// Send an event to Kafka synchronously
-func (k *KafkaSink) Send(ctx context.Context, ev *kube.EnhancedEvent) error {
+// 深度合并函数，用于合并嵌套的 map 结构
+func deepMerge(dst, src map[string]interface{}) map[string]interface{} {
+	for key, srcVal := range src {
+		if dstVal, ok := dst[key]; ok {
+			// 如果目标和源都是 map，则递归合并
+			srcMap, srcMapOk := srcVal.(map[string]interface{})
+			dstMap, dstMapOk := dstVal.(map[string]interface{})
+			if srcMapOk && dstMapOk {
+				dst[key] = deepMerge(dstMap, srcMap)
+				continue
+			}
+		}
+		// 对于其他情况，直接覆盖或添加
+		dst[key] = srcVal
+	}
+	return dst
+}
+
+func (k *KafkaSink) buildSendMessage(ev *kube.EnhancedEvent) ([]byte, error) {
 	var toSend []byte
 
 	if k.cfg.Layout != nil {
 		res, err := convertLayoutTemplate(k.cfg.Layout, ev)
 		if err != nil {
-			return err
+			return nil, err
+		}
+
+		// 如果存在自定义字段，将其深度合并到布局结果中
+		if len(k.cfg.CustomFields) > 0 {
+			res = deepMerge(res, k.cfg.CustomFields)
 		}
 
 		toSend, err = json.Marshal(res)
 		if err != nil {
-			return err
+			return nil, err
 		}
 	} else if len(k.cfg.KafkaEncode.SchemaID) > 0 {
-		var err error
-		toSend, err = k.encoder.encode(ev.ToJSON())
-		if err != nil {
-			return err
+		// 对于 Avro 编码，我们需要先处理自定义字段，然后再进行编码
+		if len(k.cfg.CustomFields) > 0 {
+			// 将事件转换为 map 以便添加自定义字段
+			var eventMap map[string]interface{}
+			if err := json.Unmarshal(ev.ToJSON(), &eventMap); err != nil {
+				return nil, err
+			}
+
+			// 深度合并自定义字段
+			eventMap = deepMerge(eventMap, k.cfg.CustomFields)
+
+			// 重新序列化
+			modifiedJSON, err := json.Marshal(eventMap)
+			if err != nil {
+				return nil, err
+			}
+
+			// 使用修改后的 JSON 进行 Avro 编码
+			toSend, err = k.encoder.encode(modifiedJSON)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			// 如果没有自定义字段，使用原始逻辑
+			var err error
+			toSend, err = k.encoder.encode(ev.ToJSON())
+			if err != nil {
+				return nil, err
+			}
 		}
 	} else {
-		toSend = ev.ToJSON()
-	}
+		// 默认 JSON 处理
+		if len(k.cfg.CustomFields) > 0 {
+			// 将事件转换为 map 以便添加自定义字段
+			var eventMap map[string]interface{}
+			if err := json.Unmarshal(ev.ToJSON(), &eventMap); err != nil {
+				return nil, err
+			}
 
-	_, _, err := k.producer.SendMessage(&sarama.ProducerMessage{
+			// 深度合并自定义字段
+			eventMap = deepMerge(eventMap, k.cfg.CustomFields)
+
+			// 重新序列化
+			var err error
+			toSend, err = json.Marshal(eventMap)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			toSend = ev.ToJSON()
+		}
+	}
+	return toSend, nil
+}
+
+// Send an event to Kafka synchronously
+func (k *KafkaSink) Send(ctx context.Context, ev *kube.EnhancedEvent) error {
+	buf, err := k.buildSendMessage(ev)
+	if err != nil {
+		return err
+	}
+	_, _, err = k.producer.SendMessage(&sarama.ProducerMessage{
 		Topic: k.cfg.Topic,
 		Key:   sarama.StringEncoder(string(ev.UID)),
-		Value: sarama.ByteEncoder(toSend),
+		Value: sarama.ByteEncoder(buf),
 	})
 
 	return err

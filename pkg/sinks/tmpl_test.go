@@ -1,11 +1,14 @@
 package sinks
 
 import (
+	"encoding/json"
+	"fmt"
+	"testing"
+	"time"
+
 	"github.com/resmoio/kubernetes-event-exporter/pkg/kube"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"testing"
-	"time"
 )
 
 func TestLayoutConvert(t *testing.T) {
@@ -49,4 +52,11 @@ func TestLayoutConvert(t *testing.T) {
 	require.True(t, ok2, "cannot cast message to string")
 
 	require.Equal(t, val2, ev.Message)
+
+	json, err := json.Marshal(res)
+	if err != nil {
+		return
+	}
+
+	fmt.Println(string(json))
 }

@@ -1,10 +1,27 @@
-logLevel: error
+logLevel: info
 logFormat: json
-clusterName: my-super-local-cluster
+clusterName: kubernetes-cluster
+kubeQPS: 100
+kubeBurst: 500
+maxEventAgeSeconds: 60
+metricsNamePrefix: event_exporter_
 route:
   routes:
     - match:
-        - receiver: "dump"
+        - receiver: "kafka"
 receivers:
-  - name: "dump"
-    stdout: {}
+  - name: "kafka"
+    kafka:
+      clientId: "kubernetes-event-exporter"
+      topic: "kube-events"
+      brokers:
+        - kafka-broker.kafka.svc.cluster.local:9092
+      tls:
+        insecure: false
+      sasl:
+        enable: true
+        username: "kafka"
+        password: "kafka"
+        mechanism: "sha256"
+      customFields: # 添加自定义参数
+        index_name: "kube-events"
